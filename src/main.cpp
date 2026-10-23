@@ -3,15 +3,19 @@
  * Platform: PlatformIO + pioarduino (Arduino framework)
  *
  * 功能:
- *   上电 -> GPIO19 拉高(锁定电源) -> 常态保持, 不再拉低
+ *   上电 -> GPIO25 立即输出高电平
+ *        -> 延时 60s -> GPIO19 拉高(锁定电源) -> 常态保持, 不再拉低
  *
  * 硬件依据 (Keyboard36_v0.1 PCB 网表核对):
  *   GPIO19/ADC1_CH3 = U6 (ESP32-P4, QFN-104) pad 20 = 网络 /ESP32-P4/POWER_ON
  *   该网络接 Power 子图的电源自锁回路: 拉高=维持整机供电, 拉低=允许断电
+ *   GPIO25 = 额外控制输出(启动即拉高)
  *
  * 预期现象:
- *   - 上电后板子持续供电运行, GPIO19 始终为高(自锁保持)
- *   - 串口每 5 秒打印一次心跳日志
+ *   - 上电后 60 秒内需按住 P_SW 维持供电(倒计时日志)
+ *   - 60 秒后 GPIO19 拉高自锁, 此后松开 P_SW 板子不掉电
+ *   - GPIO25 全程输出高电平
+ *   - 串口每 1 秒打印一次心跳日志(含引脚实际电平回读)
  *
  * 日志/烧录走 H2 调试座 (6P-2.54): 1=3V3 2=U0TX 3=U0RX 4=RESET 5=BOOT 6=GND
  */
@@ -20,7 +24,14 @@
 #include <esp_task_wdt.h>
 
 /* U6 pad20, 网络 /ESP32-P4/POWER_ON */
-static constexpr int POWER_ON_GPIO = 19;
+static constexpr int POWER_ON_GPIO   = 19;
+/* 额外控制输出引脚 */
+static constexpr int ENABLE_GPIO25   = 25;
+/* 上电到拉高自锁的延时(毫秒) */
+static constexpr uint32_t LATCH_DELAY_MS = 60000UL;
+
+static bool s_latched = false;
+static uint32_t s_bootMs = 0;
 
 static void disable_watchdogs()
 {
@@ -34,27 +45,55 @@ static void disable_watchdogs()
 
 void setup()
 {
-    /* 关闭任务看门狗(在拉高电源自锁之前, 防止长延时期间复位) */
+    /* 关闭任务看门狗(在自锁延时期间防止复位) */
     disable_watchdogs();
 
-    /* 尽早拉高 POWER_ON, 防止自锁回路未保持导致掉电 */
+    /* POWER_ON 先保持低电平(未自锁, 需按住 P_SW 供电) */
     pinMode(POWER_ON_GPIO, OUTPUT);
-    digitalWrite(POWER_ON_GPIO, HIGH);
+    digitalWrite(POWER_ON_GPIO, LOW);
+
+    /* GPIO25 启动即输出高电平 */
+    pinMode(ENABLE_GPIO25, OUTPUT);
+    digitalWrite(ENABLE_GPIO25, HIGH);
 
     Serial.begin(115200);
     delay(200);  /* 等串口就绪 */
     Serial.println();
     Serial.println("[power_hold] boot: Keyboard36 v0.1 / ESP32-P4");
-    Serial.println("[power_hold] POWER_ON (GPIO19) -> HIGH, power latched");
-    Serial.println("[power_hold] task watchdog disabled");
+    Serial.printf("[power_hold] GPIO25 -> HIGH (immediate), readback=%d\r\n",
+                  digitalRead(ENABLE_GPIO25));
+    Serial.printf("[power_hold] GPIO19 = LOW now, will latch HIGH after %lu ms\r\n",
+                  (unsigned long)LATCH_DELAY_MS);
+    Serial.println("[power_hold] HOLD power key P_SW during countdown!");
 
-    /* 常态: POWER_ON 保持拉高, 不再释放自锁 */
-    Serial.println("[power_hold] POWER_ON stays HIGH forever (latch held)");
+    s_bootMs = millis();
 }
 
 void loop()
 {
-    /* 心跳: 确认板子存活且 GPIO19 保持拉高 */
-    delay(1000);
-    Serial.println("[power_hold] alive, POWER_ON (GPIO19) = HIGH");
+    /* 非阻塞判断 60s 到时, 到时拉高 GPIO19 自锁(只执行一次) */
+    if (!s_latched && (millis() - s_bootMs) >= LATCH_DELAY_MS) {
+        digitalWrite(POWER_ON_GPIO, HIGH);
+        s_latched = true;
+        Serial.printf("[power_hold] *** GPIO19 -> HIGH, power latched! (t=%lu ms) ***\r\n",
+                      (unsigned long)(millis() - s_bootMs));
+        Serial.printf("[power_hold] readback: GPIO19=%d GPIO25=%d\r\n",
+                      digitalRead(POWER_ON_GPIO), digitalRead(ENABLE_GPIO25));
+    }
+
+    delay(1000);  /* 1 秒心跳 */
+
+    uint32_t elapsed = millis() - s_bootMs;
+    if (!s_latched) {
+        /* 倒计时期间: 每秒打印剩余秒数 */
+        Serial.printf("[power_hold] alive t=%lus, GPIO19=LOW, remaining=%lus, GPIO25=%d\r\n",
+                      (unsigned long)(elapsed / 1000),
+                      (unsigned long)((LATCH_DELAY_MS - elapsed) / 1000),
+                      digitalRead(ENABLE_GPIO25));
+    } else {
+        /* 自锁后: 报告两引脚实际电平 */
+        Serial.printf("[power_hold] alive t=%lus, GPIO19=%d(latched), GPIO25=%d\r\n",
+                      (unsigned long)(elapsed / 1000),
+                      digitalRead(POWER_ON_GPIO), digitalRead(ENABLE_GPIO25));
+    }
 }
