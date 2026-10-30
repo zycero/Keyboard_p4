@@ -4,7 +4,7 @@
  *
  * 功能:
  *   上电 -> GPIO25 立即输出高电平
- *        -> 延时 60s -> GPIO19 拉高(锁定电源) -> 常态保持, 不再拉低
+ *        -> 延时 6min -> GPIO19 拉高(锁定电源) -> 常态保持, 不再拉低
  *
  * 硬件依据 (Keyboard36_v0.1 PCB 网表核对):
  *   GPIO19/ADC1_CH3 = U6 (ESP32-P4, QFN-104) pad 20 = 网络 /ESP32-P4/POWER_ON
@@ -12,8 +12,8 @@
  *   GPIO25 = 额外控制输出(启动即拉高)
  *
  * 预期现象:
- *   - 上电后 60 秒内需按住 P_SW 维持供电(倒计时日志)
- *   - 60 秒后 GPIO19 拉高自锁, 此后松开 P_SW 板子不掉电
+ *   - 上电后 6 分钟内需按住 P_SW 维持供电(倒计时日志)
+ *   - 6 分钟后 GPIO19 拉高自锁, 此后松开 P_SW 板子不掉电
  *   - GPIO25 全程输出高电平
  *   - 串口每 1 秒打印一次心跳日志(含引脚实际电平回读)
  *
@@ -27,8 +27,8 @@
 static constexpr int POWER_ON_GPIO   = 19;
 /* 额外控制输出引脚 */
 static constexpr int ENABLE_GPIO25   = 25;
-/* 上电到拉高自锁的延时(毫秒) */
-static constexpr uint32_t LATCH_DELAY_MS = 60000UL;
+/* 上电到拉高自锁的延时(毫秒): 6 分钟 */
+static constexpr uint32_t LATCH_DELAY_MS = 360000UL;
 
 static bool s_latched = false;
 static uint32_t s_bootMs = 0;
@@ -71,7 +71,7 @@ void setup()
 
 void loop()
 {
-    /* 非阻塞判断 60s 到时, 到时拉高 GPIO19 自锁(只执行一次) */
+    /* 非阻塞判断 6min 到时, 到时拉高 GPIO19 自锁(只执行一次) */
     if (!s_latched && (millis() - s_bootMs) >= LATCH_DELAY_MS) {
         digitalWrite(POWER_ON_GPIO, HIGH);
         s_latched = true;
